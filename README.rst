@@ -1,4 +1,4 @@
-django-bitfield
+django-uuidfield
 ---------------
 
 Provides a UUIDField for your Django models.
