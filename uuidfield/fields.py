@@ -3,6 +3,7 @@ import uuid
 from django import forms
 from django.db.models import Field, SubfieldBase
 from django.utils.encoding import smart_unicode
+from binascii import unhexlify
 
 try:
     # psycopg2 needs us to register the uuid type
@@ -11,15 +12,6 @@ try:
 except (ImportError, AttributeError):
     pass
 
-
-class StringUUID(uuid.UUID):
-    def __unicode__(self):
-        return self.hex
-
-    def __len__(self):
-        return len(self.__unicode__())
-
-
 class UUIDField(Field):
     """
     A field which stores a UUID value in hex format. This may also have
@@ -27,7 +19,7 @@ class UUIDField(Field):
     new UUID value (calculated using the UUID1 method). Note that while all
     UUIDs are expected to be unique we enforce this with a DB constraint.
     """
-    # TODO: support binary storage types
+    # TODO: Add binary storage support for other database types as well
     __metaclass__ = SubfieldBase
 
     def __init__(self, version=4, node=None, clock_seq=None,
@@ -74,7 +66,12 @@ class UUIDField(Field):
         """
         if connection and 'postgres' in connection.vendor:
             return 'uuid'
+        if connection and 'mysql' in connection.vendor:
+            return 'binary(16)'
         return 'char(%s)' % self.max_length
+
+    def _db_is_binary(self, con):
+        return self.db_type(connection=con) == 'binary(16)'
 
     def pre_save(self, model_instance, add):
         """
@@ -93,30 +90,48 @@ class UUIDField(Field):
         """
         Casts uuid.UUID values into the format expected by the back end
         """
+        binary = self._db_is_binary(connection)
+
         if isinstance(value, uuid.UUID):
-            return str(value)
+            if binary:
+                return value.bytes # binary field, return raw bytes
+            #return str(value)
+            return value.hex
+
+        value.lower()
+        # support pretty UUIDs with dashed syntax as well
+        value = value.replace('-', '')
+
+        # unhex the value if using binary fields
+        if binary:
+            #return uuid.UUID(value).bytes
+            return unhexlify(value)
+
         return value
 
     def value_to_string(self, obj):
         val = self._get_val_from_obj(obj)
         if val is None:
-            data = ''
+            data = u''
         else:
             data = unicode(val)
         return data
 
     def to_python(self, value):
         """
-        Returns a ``StringUUID`` instance from the value returned by the
-        database. This doesn't use uuid.UUID directly for backwards
-        compatibility, as ``StringUUID`` implements ``__unicode__`` with
-        ``uuid.UUID.hex()``.
+        Returns a ``UUID`` instance from the value returned by the
+        database.
         """
         if not value:
             return None
-        # attempt to parse a UUID including cases in which value is a UUID
-        # instance already to be able to get our StringUUID in.
-        return StringUUID(smart_unicode(value))
+
+        if isinstance(value, uuid.UUID):
+            return value
+
+        if len(value) == 16: # assume binary uuid
+            return uuid.UUID(bytes=value)
+
+        return uuid.UUID(value)
 
     def formfield(self, **kwargs):
         defaults = {
